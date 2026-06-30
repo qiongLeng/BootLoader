@@ -8,6 +8,7 @@
 #include "i2c.h"
 #include "spi.h"
 #include "usart.h"
+#include "crc.h"
 
 //初始化状态机
 Boot_Communication_StateTypeDef boot_communication_state = BOOT_COMMUNICATION_IDLE;
@@ -153,6 +154,23 @@ uint8_t SPI_To_Flash_Internal(uint32_t W25Q16_start_addr,uint32_t flash_start_ad
     }
     return 0;
 }
+uint32_t CRC_flash_cal(uint32_t addr,uint32_t len)
+{
+	uint32_t *curr_addr = (uint32_t *)addr;
+	uint32_t dlen = (len + 3)/4;
+	//复位CRC
+	__HAL_CRC_DR_RESET(&hcrc);
+	uint32_t cal = HAL_CRC_Calculate(&hcrc,curr_addr,dlen);
+	return cal;
+}
+uint32_t CRC_uart_cal(const uint8_t *addr,uint32_t len)
+{
+	uint32_t dlen = (len + 3)/4;
+	//复位CRC
+	__HAL_CRC_DR_RESET(&hcrc);
+	uint32_t cal = HAL_CRC_Calculate(&hcrc,(uint32_t *)addr,dlen);
+	return cal;
+}
 static uint32_t s_ider_enter_tick;
 void Boot_Communication_StateMachine(void)
 {
@@ -225,11 +243,22 @@ void Boot_Communication_StateMachine(void)
         {
             if(SPI_To_Flash_Internal(SPI_FLASH_APP_ADDRESS,APP_NEW_VERSION_ADDRESS,APP_NEW_VERSION_SIZE))
             {
-                SPI_To_Flash_Internal(SPI_FLASH_APP_ADDRESS,APP_ADDRESS,APP_NEW_VERSION_SIZE); 
+                if(SPI_To_Flash_Internal(SPI_FLASH_APP_ADDRESS,APP_ADDRESS,APP_NEW_VERSION_SIZE))
+				{
+					if(CRC_flash_cal(APP_ADDRESS,APP_NEW_VERSION_SIZE)==CRC_uart_cal(Data,APP_NEW_VERSION_SIZE))
+					{
+						//FALLTHROUGH: 写入完成后直接跳转
+						boot_communication_state = BOOT_COMMUNICATION_JUMP_TO_APP;
+					}
+					else
+					{
+						//重新接收
+						boot_communication_state = BOOT_COMMUNICATION_UPDATE_AVAILABLE;
+					}
+				}
             }
             
-            boot_communication_state = BOOT_COMMUNICATION_JUMP_TO_APP;
-            //FALLTHROUGH: 写入完成后直接跳转
+            
         }
         case BOOT_COMMUNICATION_JUMP_TO_APP:
         {
