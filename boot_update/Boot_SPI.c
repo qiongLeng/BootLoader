@@ -13,12 +13,11 @@
 uint8_t flash_read_status(void)
 {
     uint8_t cmd = SPI_FLASH_CMD_RDSR1;
-    uint8_t status;
+    uint8_t status[2]={0};
     FLASH_CS_LOW();
-    HAL_SPI_Transmit(&hspi2, &cmd, 1, HAL_MAX_DELAY);
-    HAL_SPI_Receive(&hspi2, &status, 1, HAL_MAX_DELAY);
+    HAL_SPI_TransmitReceive(&hspi2, &cmd,status, 2, HAL_MAX_DELAY);
     FLASH_CS_HIGH();
-    return status;
+    return status[1];
 }
 
 static void flash_wait_ready(void)
@@ -32,6 +31,7 @@ static void flash_write_enable(void)
     FLASH_CS_LOW();
     HAL_SPI_Transmit(&hspi2, &cmd, 1, HAL_MAX_DELAY);
     FLASH_CS_HIGH();
+    flash_wait_ready();
 }
 
 void SPI_flash_sector_erase(uint32_t addr)
@@ -52,9 +52,23 @@ void SPI_flash_sector_erase(uint32_t addr)
 
 void SPI_flash_pre_erase(uint32_t addr, uint32_t len)
 {
-    for(uint32_t i=0; i<(len-1)/SPI_FLASH_SECTOR_SIZE+1; i++)
+    uint16_t writelen=0;
+    uint32_t overlen = len;
+    uint32_t nowaddr = addr;
+    while(1)
     {
-        SPI_flash_sector_erase(((addr / SPI_FLASH_SECTOR_SIZE) + i) * SPI_FLASH_SECTOR_SIZE);
+        writelen = SPI_FLASH_SECTOR_SIZE - (nowaddr%SPI_FLASH_SECTOR_SIZE);
+        if(overlen<=writelen)
+        {
+            SPI_flash_sector_erase(nowaddr);
+            return;
+        }
+        else
+        {
+            SPI_flash_sector_erase(nowaddr);
+            overlen -=writelen;
+            nowaddr +=writelen;
+        }
     }
 }
 
@@ -68,34 +82,40 @@ void SPI_flash_page_write(uint32_t addr, uint8_t *data, uint32_t len)
     {
          return; // 地址越界
     } 
-    uint32_t plen = len;
-    uint32_t paddr=addr;
+    uint32_t overlen = len;
+    uint32_t nowaddr=addr;
     uint8_t *pdata=data;
     uint8_t cmd[4];
-    uint32_t write_len;
-    while(plen > 0)
+    uint16_t writelen;
+    while(1)
     {
         cmd[0] = SPI_FLASH_CMD_PAGE_PROG;
-        cmd[1] = (paddr >> 16) & 0xFF;
-        cmd[2] = (paddr >> 8) & 0xFF;
-        cmd[3] = paddr & 0xFF;
-        if(plen < SPI_FLASH_PAGE_SIZE - (paddr % SPI_FLASH_PAGE_SIZE))
+        cmd[1] = (nowaddr >> 16) & 0xFF;
+        cmd[2] = (nowaddr >> 8) & 0xFF;
+        cmd[3] = nowaddr & 0xFF;
+        writelen = SPI_FLASH_PAGE_SIZE - (nowaddr % SPI_FLASH_PAGE_SIZE);
+        if(overlen<=writelen)
         {
-            write_len = plen;
+            flash_write_enable();
+            FLASH_CS_LOW();
+            HAL_SPI_Transmit(&hspi2, cmd, 4, HAL_MAX_DELAY);
+            HAL_SPI_Transmit(&hspi2, pdata, overlen, HAL_MAX_DELAY);
+            FLASH_CS_HIGH();
+            flash_wait_ready();
+            return;
         }
         else
         {
-            write_len = SPI_FLASH_PAGE_SIZE - (paddr % SPI_FLASH_PAGE_SIZE);
+            flash_write_enable();
+            FLASH_CS_LOW();
+            HAL_SPI_Transmit(&hspi2, cmd, 4, HAL_MAX_DELAY);
+            HAL_SPI_Transmit(&hspi2, pdata, writelen, HAL_MAX_DELAY);
+            FLASH_CS_HIGH();
+            nowaddr += writelen;
+            pdata += writelen;
+            overlen -= writelen;
+            flash_wait_ready();
         }
-        flash_write_enable();
-        FLASH_CS_LOW();
-        HAL_SPI_Transmit(&hspi2, cmd, 4, HAL_MAX_DELAY);
-        HAL_SPI_Transmit(&hspi2, pdata, write_len, HAL_MAX_DELAY);
-        FLASH_CS_HIGH();
-        paddr += write_len;
-        pdata += write_len;
-        plen -= write_len;
-        flash_wait_ready();
     }
 }
 
@@ -111,4 +131,5 @@ void SPI_flash_page_read(uint32_t addr, uint8_t *data, uint32_t len)
     HAL_SPI_Transmit(&hspi2, cmd, 4, HAL_MAX_DELAY);
     HAL_SPI_Receive(&hspi2, data, len, HAL_MAX_DELAY);
     FLASH_CS_HIGH();
+    flash_wait_ready();
 }
