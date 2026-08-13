@@ -46,12 +46,11 @@ void Boot_I2C_readbag(uint8_t add, uint8_t *data, uint16_t len)
 
 void Boot_I2C_erase(void)
 {
-    uint8_t data[AT24C20_PAGE_SIZE];
+    uint8_t data[AT24C20_PAGE_SIZE]={0};
     memset(data, 0xFF, AT24C20_PAGE_SIZE);
     for(uint16_t i=0; i<AT24C20_SIZE; i+=AT24C20_PAGE_SIZE)
     {
         Boot_I2C_writebag(i, data, AT24C20_PAGE_SIZE);
-        eeprom_wait_ready();
     }
 }
 
@@ -60,29 +59,26 @@ void Boot_I2C_writeflag(uint8_t add, uint8_t key)
     if(key)
     {
         Boot_I2C_writebyte(add , UPDATE_FLAG_OK);
-        eeprom_wait_ready();
     }
     else
     {
         Boot_I2C_writebyte(add , UPDATE_FLAG_FAIL);
-        eeprom_wait_ready();
     }
 }
 
 uint8_t Boot_I2C_readkey(void)
 {
-  uint8_t data[3];
-  HAL_I2C_Mem_Read(&hi2c1, AT24C20_ADDRESS,(uint16_t)UPDATE_FLAG_ADDRESS, I2C_MEMADD_SIZE_8BIT, data, 3, 1000);
-  if(data[0] == UPDATE_FLAG_OK)
+  uint8_t data;
+  HAL_I2C_Mem_Read(&hi2c1, AT24C20_ADDRESS,(uint16_t)UPDATE_FLAG_ADDRESS, I2C_MEMADD_SIZE_8BIT, &data, 1, 1000);
+  if(data == UPDATE_FLAG_OK)
   {
-      return 1;
+    return 1;
   }
-  else if(data[2] == UPDATE_FLAG_OK)
-  {
-      return 2;
-  }
-  else
-  {
-      return 0;
-  }
+  return 0;
+}
+uint8_t Boot_I2C_bug(void)
+{
+  uint8_t data;
+  HAL_I2C_Mem_Read(&hi2c1, AT24C20_ADDRESS,(uint16_t)UPDATE_BUG_ADDRESS, I2C_MEMADD_SIZE_8BIT, &data, 1, 1000);
+  return data;
 }
