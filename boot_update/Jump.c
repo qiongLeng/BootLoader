@@ -24,7 +24,7 @@ uint8_t buff[SPI_TO_FLASH_SIZE]={0};
 uint32_t current_address = SPI_FLASH_APP_ADDRESS;
 //接收数据包
 extern uint8_t Data[BOOT_COMMUNICATION_SIZE];
-extern uint8_t pData[BOOT_COMMUNICATION_SIZE];
+uint8_t data[APP_NEW_VERSION_SIZE]={0};
 //接收数据大小
 extern uint16_t Data_Size;
 
@@ -45,12 +45,13 @@ void JumpToApp(void)
     HAL_I2C_DeInit(&hi2c1);
     HAL_SPI_DeInit(&hspi2);
     HAL_UART_DeInit(&huart1);
-    __disable_irq(); //禁用中断
-    __set_MSP(app_stack); //设置主堆栈指针
-    app_entry(); //跳转到应用程序的复位处理函数
+    __disable_irq();        //禁用中断
+    SCB->VTOR = APP_ADDRESS;//设置向量表
+    __set_MSP(app_stack);   //设置主堆栈指针
+    app_entry();            //跳转到应用程序的复位处理函数
 }
 
-void JumpToBackupApp(void)
+void JumpToNewApp(void)
 {
     uint32_t app_stack=*(volatile uint32_t*)APP_NEW_VERSION_ADDRESS; //获取应用程序的栈顶地址
     void (*app_entry)(void);
@@ -66,9 +67,10 @@ void JumpToBackupApp(void)
     HAL_I2C_DeInit(&hi2c1);
     HAL_SPI_DeInit(&hspi2);
     HAL_UART_DeInit(&huart1);
-    __disable_irq(); //禁用中断
-    __set_MSP(app_stack); //设置主堆栈指针
-    app_entry(); //跳转到应用程序的复位处理函数
+    __disable_irq();                    //禁用中断
+    SCB->VTOR = APP_NEW_VERSION_ADDRESS;//设置向量表
+    __set_MSP(app_stack);               //设置主堆栈指针
+    app_entry();                        //跳转到应用程序的复位处理函数
 }
 
 //擦除flash的特定区域
@@ -114,11 +116,8 @@ uint8_t SPI_To_Flash_Internal(uint32_t W25Q16_start_addr,uint32_t flash_start_ad
     uint32_t dW25Q16_start_addr=W25Q16_start_addr;
     uint32_t dflash_start_addr=flash_start_addr;
     uint32_t dlen = 0;
+    Boot_I2C_writebyte(UPDATE_BUG_ADDRESS , 3);
     if(flash_start_addr==APP_NEW_VERSION_ADDRESS)
-    {
-        Boot_I2C_writebyte(UPDATE_FLAG_NEW_ADDRESS,UPDATE_FLAG_FAIL);
-    }
-    else if(flash_start_addr==APP_ADDRESS)
     {
         Boot_I2C_writebyte(UPDATE_FLAG_ADDRESS,UPDATE_FLAG_FAIL);
     }
@@ -138,21 +137,11 @@ uint8_t SPI_To_Flash_Internal(uint32_t W25Q16_start_addr,uint32_t flash_start_ad
         {
             SPI_flash_page_read(dW25Q16_start_addr,buff,len-dlen);
             InternalFlash_Write(dflash_start_addr,buff,len-dlen);
-            Boot_I2C_writebyte(UPDATE_FLAG_NEW_ADDRESS,1);
-            break;
+            Boot_I2C_writebyte(UPDATE_FLAG_ADDRESS,UPDATE_FLAG_OK);
+            return 1;
         }
     }
-    if(flash_start_addr==APP_NEW_VERSION_ADDRESS)
-    {
-        Boot_I2C_writebyte(UPDATE_FLAG_NEW_ADDRESS,UPDATE_FLAG_OK);
-        return 1;
-    }
-    else if(flash_start_addr==APP_ADDRESS)
-    {
-        Boot_I2C_writebyte(UPDATE_FLAG_ADDRESS,UPDATE_FLAG_OK);
-        return 1;
-    }
-    return 0;
+	return 0;
 }
 uint32_t CRC_flash_cal(uint32_t addr,uint32_t len)
 {
@@ -161,6 +150,15 @@ uint32_t CRC_flash_cal(uint32_t addr,uint32_t len)
 	//复位CRC
 	__HAL_CRC_DR_RESET(&hcrc);
 	uint32_t cal = HAL_CRC_Calculate(&hcrc,curr_addr,dlen);
+	return cal;
+}
+uint32_t CRC_spi_cal(uint32_t addr,uint32_t len)
+{
+    SPI_flash_page_read(addr,data,len);
+	uint32_t dlen = (len + 3)/4;
+	//复位CRC
+	__HAL_CRC_DR_RESET(&hcrc);
+	uint32_t cal = HAL_CRC_Calculate(&hcrc,(uint32_t *)data,dlen);
 	return cal;
 }
 uint32_t CRC_uart_cal(const uint8_t *addr,uint32_t len)
@@ -200,20 +198,33 @@ void Boot_Communication_StateMachine(void)
         }
         case BOOT_COMMUNICATION_NO_DATA:
         {
-            //没有接收到数据,判断24C02的标志位,跳转到应用程序
-            if(Boot_I2C_readkey() == 1)
+            uint8_t bug = Boot_I2C_bug();
+            //判断是否处于稳定状态
+            if(bug>6&&bug<10)
+            {
+                if(SPI_To_Flash_Internal(SPI_FLASH_APP_ADDRESS,APP_ADDRESS,APP_NEW_VERSION_SIZE))
+				{
+					if(CRC_flash_cal(APP_ADDRESS,APP_NEW_VERSION_SIZE)!=CRC_spi_cal(SPI_FLASH_APP_ADDRESS,APP_NEW_VERSION_SIZE))
+					{
+                        SPI_To_Flash_Internal(SPI_FLASH_APP_ADDRESS,APP_ADDRESS,APP_NEW_VERSION_SIZE);
+                        JumpToNewApp();
+					}
+                    else
+                    {
+                        Boot_I2C_writebyte(UPDATE_BUG_ADDRESS ,0);
+                        JumpToApp();
+                    }
+                    
+				}
+            }
+            else if(bug>0)
+            {
+                Boot_I2C_writebyte(UPDATE_BUG_ADDRESS ,bug-1);
+                JumpToNewApp();
+            }
+            else 
             {
                 JumpToApp();
-            }
-            else if(Boot_I2C_readkey() == 2)
-            {
-                JumpToBackupApp();
-            }
-            else
-            {
-                //程序被破坏
-                printf("No update flag found, staying in bootloader mode.\r\n");
-                boot_communication_state = BOOT_COMMUNICATION_UPDATE_AVAILABLE;
             }
             break;
         }
@@ -229,8 +240,11 @@ void Boot_Communication_StateMachine(void)
                 spi_receive_flag=0;
                 if(current_address >= SPI_FLASH_APP_ADDRESS + APP_NEW_VERSION_SIZE)
                 {
-                    flash_flag = 1;  // 写完之后马上判断，不依赖下一包回调
-					
+                    flash_flag = 1;  // 写完之后马上判断，不依赖下一包回调;
+                }
+                else
+                {
+                    break;
                 }
             }
             if(flash_flag)
@@ -243,37 +257,36 @@ void Boot_Communication_StateMachine(void)
         {
             if(SPI_To_Flash_Internal(SPI_FLASH_APP_ADDRESS,APP_NEW_VERSION_ADDRESS,APP_NEW_VERSION_SIZE))
             {
-                if(SPI_To_Flash_Internal(SPI_FLASH_APP_ADDRESS,APP_ADDRESS,APP_NEW_VERSION_SIZE))
-				{
-					if(CRC_flash_cal(APP_ADDRESS,APP_NEW_VERSION_SIZE)==CRC_uart_cal(Data,APP_NEW_VERSION_SIZE))
-					{
-						//FALLTHROUGH: 写入完成后直接跳转
-						boot_communication_state = BOOT_COMMUNICATION_JUMP_TO_APP;
-					}
-					else
-					{
-						//重新接收
-						boot_communication_state = BOOT_COMMUNICATION_UPDATE_AVAILABLE;
-					}
-				}
+                if(CRC_flash_cal(APP_NEW_VERSION_ADDRESS,APP_NEW_VERSION_SIZE)==CRC_spi_cal(SPI_FLASH_APP_ADDRESS,APP_NEW_VERSION_SIZE))
+                {
+                    //FALLTHROUGH: 写入完成后直接跳转
+                    boot_communication_state = BOOT_COMMUNICATION_JUMP_TO_APP;
+                }
+                else
+                {
+                    //重新接收
+                    boot_communication_state = BOOT_COMMUNICATION_UPDATE_AVAILABLE;
+                    printf("Update fail,again...\r\n");
+                }
             }
-            
-            
+            break; 
         }
         case BOOT_COMMUNICATION_JUMP_TO_APP:
         {
+            //没有接收到数据,判断24C02的标志位,跳转到新应用程序
             if(Boot_I2C_readkey() == 1)
             {
-                JumpToApp();
+                JumpToNewApp();
             }
-            else if(Boot_I2C_readkey() == 2)
+            else if(Boot_I2C_readkey() == 0)
             {
-                JumpToBackupApp();
+                JumpToApp();
             }
             else
             {
                 //程序被破坏
                 printf("No update flag found, staying in bootloader mode.\r\n");
+                boot_communication_state = BOOT_COMMUNICATION_UPDATE_AVAILABLE;
             }
             break;
         }
