@@ -4,14 +4,14 @@
 //栈顶地址
 #define STACK_POINTER 0x20000000 
 //APP应用程序起始地址
-#define APP_ADDRESS 0x08008000
+#define APP_ADDRESS 0x08014000
 //APP应用新程序版本地址
-#define APP_NEW_VERSION_ADDRESS 0x08014000 
+#define APP_NEW_VERSION_ADDRESS 0x08020000 
 //25Q16程序起始位置
 #define SPI_FLASH_APP_ADDRESS 0x00000000
 //要下载的APP_NEW_VERSION大小
 //#define APP_NEW_VERSION_SIZE  4008
-#define APP_NEW_VERSION_SIZE  3992
+#define APP_NEW_VERSION_SIZE  7952
 //每次从25Q16到FLASH的字节数
 #define SPI_TO_FLASH_SIZE     1024
 
@@ -27,22 +27,23 @@ typedef enum
     //如果要更新，则进入接收状态,把程序放进24C02,等待接收完成
     BOOT_COMMUNICATION_UPDATE_AVAILABLE,
     //把新程序更新到APP_NEW_VERSION_ADDRESS中,更新24C02的标志位
-    //把APP_NEW_VERSION_ADDRESS中的程序更新到APP_ADDRESS中,更新24C02的标志位
     BOOT_COMMUNICATION_UPDATE_TO_APP,
-    //启动APP_ADDRESS应用程序
+    //启动APP_NEW_VERSION_ADDRESS应用程序
     BOOT_COMMUNICATION_JUMP_TO_APP,
 } Boot_Communication_StateTypeDef;
 
 //跳转程序
 void JumpToApp(void);
-//备用跳转程序
-void JumpToBackupApp(void);
+//跳转新程序
+void JumpToNewApp(void);
 //擦除flash的特定区域
 void InternalFlash_Erase(uint32_t start_addr, uint32_t len);
 //给flash的特点区域写数据,半字方式写入
 void InternalFlash_Write(uint32_t start_addr, uint8_t *data, uint32_t len);
 //把25Q16的SPI_FLASH_APP_ADDRESS地址的内容放入flash的APP_NEW_VERSION_ADDRESS
 uint8_t SPI_To_Flash_Internal(uint32_t W25Q16_start_addr,uint32_t flash_start_addr,uint32_t len);
+//CRC校验
+uint32_t CRC_flash_cal(uint32_t addr,uint32_t len);
 //状态机处理
 void Boot_Communication_StateMachine(void);
 
